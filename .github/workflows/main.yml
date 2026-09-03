@@ -256,9 +256,71 @@ jobs:
           echo ""
           echo "Launcher check complete."
 
+      # ==========================================================
+      # 8. EXTRA FIX - requestLegacyExternalStorage
+      # ==========================================================
+
+      - name: Source Fixer - Fix Legacy Storage API
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          set -e
+
+          echo "========================================"
+          echo " Fixing requestLegacyExternalStorage"
+          echo "========================================"
+
+          FILE="app/build.gradle"
+
+          echo "Current configuration:"
+          grep -n -E \
+            'compileSdkVersion|targetSdkVersion|buildToolsVersion' \
+            "$FILE" || true
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("app/build.gradle")
+          text = path.read_text()
+
+          # requestLegacyExternalStorage was introduced in API 29.
+          text = re.sub(
+              r'compileSdkVersion\s+\d+',
+              'compileSdkVersion 29',
+              text,
+              count=1
+          )
+
+          # Ensure target SDK is also compatible.
+          text = re.sub(
+              r'targetSdkVersion\s+\d+',
+              'targetSdkVersion 29',
+              text,
+              count=1
+          )
+
+          path.write_text(text)
+          PY
+
+          echo ""
+          echo "Updated configuration:"
+          grep -n -E \
+            'compileSdkVersion|targetSdkVersion|buildToolsVersion' \
+            "$FILE" || true
+
+          echo ""
+          echo "Installing required Android 29 components..."
+
+          sdkmanager "platforms;android-29"
+          sdkmanager "build-tools;29.0.2"
+
+          echo ""
+          echo "Legacy storage compatibility fix complete."
+
 
       # ==========================================================
-      # 8. GRADLE INFORMATION
+      # 9. GRADLE INFORMATION
       # ==========================================================
 
       - name: Inspect Gradle Configuration
@@ -280,7 +342,7 @@ jobs:
 
 
       # ==========================================================
-      # 9. GRADLE BUILD
+      # 10. GRADLE BUILD
       # ==========================================================
 
       - name: Build Debug APK
@@ -296,7 +358,7 @@ jobs:
 
 
       # ==========================================================
-      # 10. FIND APK
+      # 11. FIND APK
       # ==========================================================
 
       - name: Find APK
@@ -311,7 +373,7 @@ jobs:
 
 
       # ==========================================================
-      # 11. UPLOAD APK
+      # 12. UPLOAD APK
       # ==========================================================
 
       - name: Upload APK
@@ -325,7 +387,7 @@ jobs:
 
 
       # ==========================================================
-      # 12. UPLOAD BUILD REPORTS
+      # Final Step. UPLOAD BUILD REPORTS
       # ==========================================================
 
       - name: Upload Build Reports
