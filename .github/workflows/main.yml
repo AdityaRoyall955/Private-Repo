@@ -1,0 +1,374 @@
+name: Build Android APK - Source Fixer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Source Fix → Build APK
+    runs-on: ubuntu-22.04
+
+    steps:
+
+      # ============================================================
+      # 1. DOWNLOAD SOURCE
+      # ============================================================
+
+      - name: Download source ZIP
+        shell: bash
+        run: |
+          set -e
+
+          curl -L --fail --retry 3 \
+            -o source.zip \
+            'https://github.com/AdityaRoyall955/Private-Repo/releases/download/CHATGPT/JAVA.BASED.SRC.2.2.@Yash_Mod.zip'
+
+          echo "Source downloaded:"
+          ls -lh source.zip
+
+          echo "Testing ZIP..."
+          unzip -t source.zip
+
+
+      # ============================================================
+      # 2. EXTRACT SOURCE
+      # ============================================================
+
+      - name: Extract source
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p source
+          unzip -q source.zip -d source
+
+          echo "Source extracted."
+
+          find source -maxdepth 3 -type f | head -300
+
+
+      # ============================================================
+      # 3. FIND ANDROID PROJECT
+      # ============================================================
+
+      - name: Locate Gradle project
+        shell: bash
+        run: |
+          set -e
+
+          GRADLEW="$(find "$GITHUB_WORKSPACE/source" \
+            -type f \
+            -name gradlew \
+            -print -quit)"
+
+          if [ -z "$GRADLEW" ]; then
+            echo "::error::gradlew was not found."
+            find source -maxdepth 6 -type f | head -500
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$GRADLEW")"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          chmod +x "$GRADLEW"
+
+          echo "================================"
+          echo "Android Project:"
+          echo "$PROJECT_DIR"
+          echo "================================"
+
+
+      # ============================================================
+      # 4. SETUP JAVA
+      # ============================================================
+
+      - name: Set up JDK 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+          cache: gradle
+
+
+      # ============================================================
+      # 5. SETUP ANDROID SDK
+      # ============================================================
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-28" \
+            "build-tools;28.0.3"
+
+
+      # ============================================================
+      # 6. SOURCE FIXER
+      # ============================================================
+
+      - name: Source Fixer - Basic cleanup
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "        SOURCE FIXER STARTED"
+          echo "========================================"
+
+          echo ""
+          echo "[1/6] Removing generated build files..."
+
+          rm -rf .gradle
+          rm -rf build
+          rm -rf app/build
+
+          echo "Done."
+
+
+          echo ""
+          echo "[2/6] Checking Gradle wrapper..."
+
+          if [ ! -f "./gradlew" ]; then
+            echo "::error::gradlew missing."
+            exit 1
+          fi
+
+          chmod +x ./gradlew
+
+          echo "Done."
+
+
+          echo ""
+          echo "[3/6] Checking required Gradle files..."
+
+          REQUIRED_FILES=(
+            "settings.gradle"
+            "build.gradle"
+            "app/build.gradle"
+          )
+
+          for FILE in "${REQUIRED_FILES[@]}"; do
+            if [ ! -f "$FILE" ]; then
+              echo "::error::Missing $FILE"
+              exit 1
+            fi
+          done
+
+          echo "Gradle files OK."
+
+
+          echo ""
+          echo "[4/6] Checking AndroidManifest..."
+
+          if [ ! -f "app/src/main/AndroidManifest.xml" ]; then
+            echo "::error::AndroidManifest.xml missing."
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+
+          path = "app/src/main/AndroidManifest.xml"
+
+          try:
+              ET.parse(path)
+              print("AndroidManifest.xml: XML OK")
+          except Exception as e:
+              print("AndroidManifest.xml: XML ERROR")
+              print(e)
+              raise
+          PY
+
+
+          echo ""
+          echo "[5/6] Checking resource XML files..."
+
+          python3 - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+
+          root = "app/src/main/res"
+
+          errors = []
+
+          if os.path.isdir(root):
+              for base, dirs, files in os.walk(root):
+                  for name in files:
+                      if not name.endswith(".xml"):
+                          continue
+
+                      path = os.path.join(base, name)
+
+                      try:
+                          ET.parse(path)
+                      except Exception as e:
+                          errors.append((path, str(e)))
+
+          if errors:
+              print("")
+              print("XML ERRORS FOUND:")
+
+              for path, error in errors:
+                  print(f"\n{path}")
+                  print(error)
+
+              raise SystemExit(1)
+
+          print("All resource XML files are valid.")
+          PY
+
+
+          echo ""
+          echo "[6/6] Checking Java source files..."
+
+          JAVA_COUNT=$(find app/src -type f -name "*.java" | wc -l)
+
+          echo "Java files found: $JAVA_COUNT"
+
+          if [ "$JAVA_COUNT" -eq 0 ]; then
+            echo "::warning::No Java files found."
+          fi
+
+          echo ""
+          echo "========================================"
+          echo "        SOURCE FIXER FINISHED"
+          echo "========================================"
+
+
+      # ============================================================
+      # 7. FIX COMMON ANDROID RESOURCE PROBLEMS
+      # ============================================================
+
+      - name: Source Fixer - Android resources
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          set -e
+
+          echo "Checking launcher resources..."
+
+          RES="app/src/main/res"
+
+          if [ -d "$RES/mipmap-anydpi-v26" ]; then
+
+            echo "Adaptive launcher icons detected."
+
+            for FILE in \
+              "$RES/mipmap-anydpi-v26/ic_launcher.xml" \
+              "$RES/mipmap-anydpi-v26/ic_launcher_round.xml"
+            do
+
+              if [ -f "$FILE" ]; then
+                echo "Checking $FILE"
+
+                if grep -q '@mipmap/' "$FILE"; then
+                  echo "Found invalid mipmap reference inside adaptive icon."
+                  echo "This will be reported rather than blindly rewritten."
+                fi
+              fi
+
+            done
+          fi
+
+          echo "Resource check completed."
+
+
+      # ============================================================
+      # 8. GRADLE CONFIGURATION CHECK
+      # ============================================================
+
+      - name: Inspect Gradle configuration
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          echo "========== Gradle Wrapper =========="
+          grep -n "distributionUrl" \
+            gradle/wrapper/gradle-wrapper.properties || true
+
+          echo ""
+          echo "========== Root build.gradle =========="
+          sed -n '1,240p' build.gradle
+
+          echo ""
+          echo "========== App build.gradle =========="
+          sed -n '1,300p' app/build.gradle
+
+
+      # ============================================================
+      # 9. GRADLE BUILD
+      # ============================================================
+
+      - name: Build Debug APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          set -o pipefail
+
+          echo "========================================"
+          echo "          BUILDING APK"
+          echo "========================================"
+
+          ./gradlew \
+            assembleDebug \
+            --stacktrace \
+            --info \
+            --no-daemon
+
+
+      # ============================================================
+      # 10. FIND APK
+      # ============================================================
+
+      - name: Find generated APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          echo "========================================"
+          echo "             APK RESULTS"
+          echo "========================================"
+
+          find . \
+            -type f \
+            -name "*.apk" \
+            -print
+
+
+      # ============================================================
+      # 11. UPLOAD APK
+      # ============================================================
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-Debug-APK
+          path: |
+            ${{ env.PROJECT_DIR }}/**/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+
+      # ============================================================
+      # 12. UPLOAD BUILD LOGS IF NEEDED
+      # ============================================================
+
+      - name: Upload build reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Build-Reports
+          path: |
+            ${{ env.PROJECT_DIR }}/**/build/reports/**
+            ${{ env.PROJECT_DIR }}/**/build/outputs/logs/**
+          if-no-files-found: ignore
+          retention-days: 7
