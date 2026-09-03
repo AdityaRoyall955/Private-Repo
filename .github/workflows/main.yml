@@ -1,4 +1,4 @@
-name: Build Android APK - Source Fixer
+name: Source Fix -> Build APK
 
 on:
   workflow_dispatch:
@@ -8,17 +8,15 @@ permissions:
 
 jobs:
   build:
-    name: Source Fix → Build APK
     runs-on: ubuntu-22.04
 
     steps:
 
-      # ============================================================
+      # ==========================================================
       # 1. DOWNLOAD SOURCE
-      # ============================================================
+      # ==========================================================
 
-      - name: Download source ZIP
-        shell: bash
+      - name: Download Source ZIP
         run: |
           set -e
 
@@ -26,36 +24,32 @@ jobs:
             -o source.zip \
             'https://github.com/AdityaRoyall955/Private-Repo/releases/download/CHATGPT/JAVA.BASED.SRC.2.2.@Yash_Mod.zip'
 
-          echo "Source downloaded:"
           ls -lh source.zip
-
-          echo "Testing ZIP..."
           unzip -t source.zip
 
 
-      # ============================================================
+      # ==========================================================
       # 2. EXTRACT SOURCE
-      # ============================================================
+      # ==========================================================
 
-      - name: Extract source
-        shell: bash
+      - name: Extract Source
         run: |
           set -e
 
-          mkdir -p source
+          rm -rf source
+          mkdir source
+
           unzip -q source.zip -d source
 
-          echo "Source extracted."
+          echo "Source extracted:"
+          find source -maxdepth 3 -type f | head -200
 
-          find source -maxdepth 3 -type f | head -300
 
+      # ==========================================================
+      # 3. FIND PROJECT
+      # ==========================================================
 
-      # ============================================================
-      # 3. FIND ANDROID PROJECT
-      # ============================================================
-
-      - name: Locate Gradle project
-        shell: bash
+      - name: Locate Android Project
         run: |
           set -e
 
@@ -65,8 +59,7 @@ jobs:
             -print -quit)"
 
           if [ -z "$GRADLEW" ]; then
-            echo "::error::gradlew was not found."
-            find source -maxdepth 6 -type f | head -500
+            echo "::error::gradlew not found"
             exit 1
           fi
 
@@ -76,238 +69,219 @@ jobs:
 
           chmod +x "$GRADLEW"
 
-          echo "================================"
-          echo "Android Project:"
+          echo "Project:"
           echo "$PROJECT_DIR"
-          echo "================================"
 
 
-      # ============================================================
-      # 4. SETUP JAVA
-      # ============================================================
+      # ==========================================================
+      # 4. JAVA 11
+      # ==========================================================
 
-      - name: Set up JDK 11
+      - name: Setup Java 11
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '11'
-          cache: gradle
 
 
-      # ============================================================
-      # 5. SETUP ANDROID SDK
-      # ============================================================
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # ==========================================================
+      # 5. INSTALL ANDROID SDK MANUALLY
+      # ==========================================================
 
       - name: Install Android SDK
         shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
+          set -e
+
+          export ANDROID_SDK_ROOT="$HOME/android-sdk"
+          export ANDROID_HOME="$ANDROID_SDK_ROOT"
+
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+
+          cd /tmp
+
+          echo "Downloading Android command line tools..."
+
+          curl -L --fail --retry 3 \
+            -o commandlinetools.zip \
+            'https://dl.google.com/android/repository/commandlinetools-linux-8512546_latest.zip'
+
+          unzip -q commandlinetools.zip
+
+          rm -rf "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+
+          mv cmdline-tools \
+            "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+
+          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
+
+          echo "sdkmanager:"
+          sdkmanager --version
+
+          echo "Accepting licenses..."
+
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+
+          echo "Installing required SDK..."
 
           sdkmanager \
             "platform-tools" \
             "platforms;android-28" \
             "build-tools;28.0.3"
 
+          echo "Android SDK installation complete."
 
-      # ============================================================
+
+      # ==========================================================
       # 6. SOURCE FIXER
-      # ============================================================
+      # ==========================================================
 
-      - name: Source Fixer - Basic cleanup
+      - name: Source Fixer - Cleanup
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -e
 
-          echo "========================================"
-          echo "        SOURCE FIXER STARTED"
-          echo "========================================"
+          echo "======================================"
+          echo "        SOURCE FIXER START"
+          echo "======================================"
 
-          echo ""
-          echo "[1/6] Removing generated build files..."
+          echo "[1] Removing generated files..."
 
           rm -rf .gradle
           rm -rf build
           rm -rf app/build
 
-          echo "Done."
+          echo "[2] Checking Gradle..."
 
+          test -f gradlew
+          test -f settings.gradle
+          test -f build.gradle
+          test -f app/build.gradle
 
-          echo ""
-          echo "[2/6] Checking Gradle wrapper..."
+          chmod +x gradlew
 
-          if [ ! -f "./gradlew" ]; then
-            echo "::error::gradlew missing."
-            exit 1
-          fi
+          echo "[3] Checking Manifest..."
 
-          chmod +x ./gradlew
-
-          echo "Done."
-
-
-          echo ""
-          echo "[3/6] Checking required Gradle files..."
-
-          REQUIRED_FILES=(
-            "settings.gradle"
-            "build.gradle"
-            "app/build.gradle"
-          )
-
-          for FILE in "${REQUIRED_FILES[@]}"; do
-            if [ ! -f "$FILE" ]; then
-              echo "::error::Missing $FILE"
-              exit 1
-            fi
-          done
-
-          echo "Gradle files OK."
-
-
-          echo ""
-          echo "[4/6] Checking AndroidManifest..."
-
-          if [ ! -f "app/src/main/AndroidManifest.xml" ]; then
-            echo "::error::AndroidManifest.xml missing."
-            exit 1
-          fi
+          test -f app/src/main/AndroidManifest.xml
 
           python3 - <<'PY'
           import xml.etree.ElementTree as ET
 
-          path = "app/src/main/AndroidManifest.xml"
+          ET.parse("app/src/main/AndroidManifest.xml")
 
-          try:
-              ET.parse(path)
-              print("AndroidManifest.xml: XML OK")
-          except Exception as e:
-              print("AndroidManifest.xml: XML ERROR")
-              print(e)
-              raise
+          print("AndroidManifest.xml: OK")
           PY
 
-
-          echo ""
-          echo "[5/6] Checking resource XML files..."
+          echo "[4] Checking resource XML..."
 
           python3 - <<'PY'
           import os
           import xml.etree.ElementTree as ET
 
           root = "app/src/main/res"
-
           errors = []
 
-          if os.path.isdir(root):
-              for base, dirs, files in os.walk(root):
-                  for name in files:
-                      if not name.endswith(".xml"):
-                          continue
+          for base, dirs, files in os.walk(root):
+              for filename in files:
+                  if not filename.endswith(".xml"):
+                      continue
 
-                      path = os.path.join(base, name)
+                  path = os.path.join(base, filename)
 
-                      try:
-                          ET.parse(path)
-                      except Exception as e:
-                          errors.append((path, str(e)))
+                  try:
+                      ET.parse(path)
+                  except Exception as e:
+                      errors.append((path, e))
 
           if errors:
-              print("")
-              print("XML ERRORS FOUND:")
+              print("XML ERRORS:")
 
               for path, error in errors:
-                  print(f"\n{path}")
+                  print(path)
                   print(error)
 
               raise SystemExit(1)
 
-          print("All resource XML files are valid.")
+          print("All resource XML files: OK")
           PY
 
+          echo "[5] Checking Java files..."
 
-          echo ""
-          echo "[6/6] Checking Java source files..."
+          find app/src -type f -name "*.java" | sort
 
-          JAVA_COUNT=$(find app/src -type f -name "*.java" | wc -l)
+          echo "[6] Checking launcher..."
 
-          echo "Java files found: $JAVA_COUNT"
-
-          if [ "$JAVA_COUNT" -eq 0 ]; then
-            echo "::warning::No Java files found."
+          if [ -f app/src/main/AndroidManifest.xml ]; then
+            grep -n "android:icon\|android:roundIcon" \
+              app/src/main/AndroidManifest.xml || true
           fi
 
-          echo ""
-          echo "========================================"
-          echo "        SOURCE FIXER FINISHED"
-          echo "========================================"
+          echo "======================================"
+          echo "         SOURCE FIXER END"
+          echo "======================================"
 
 
-      # ============================================================
-      # 7. FIX COMMON ANDROID RESOURCE PROBLEMS
-      # ============================================================
+      # ==========================================================
+      # 7. CHECK ADAPTIVE ICONS
+      # ==========================================================
 
-      - name: Source Fixer - Android resources
+      - name: Source Fixer - Launcher Check
         working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -e
 
-          echo "Checking launcher resources..."
+          echo "Checking adaptive launcher icons..."
 
-          RES="app/src/main/res"
+          for FILE in \
+            app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml \
+            app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml
+          do
 
-          if [ -d "$RES/mipmap-anydpi-v26" ]; then
+            if [ -f "$FILE" ]; then
+              echo ""
+              echo "===== $FILE ====="
+              cat "$FILE"
+            fi
 
-            echo "Adaptive launcher icons detected."
+          done
 
-            for FILE in \
-              "$RES/mipmap-anydpi-v26/ic_launcher.xml" \
-              "$RES/mipmap-anydpi-v26/ic_launcher_round.xml"
-            do
-
-              if [ -f "$FILE" ]; then
-                echo "Checking $FILE"
-
-                if grep -q '@mipmap/' "$FILE"; then
-                  echo "Found invalid mipmap reference inside adaptive icon."
-                  echo "This will be reported rather than blindly rewritten."
-                fi
-              fi
-
-            done
-          fi
-
-          echo "Resource check completed."
+          echo ""
+          echo "Launcher check complete."
 
 
-      # ============================================================
-      # 8. GRADLE CONFIGURATION CHECK
-      # ============================================================
+      # ==========================================================
+      # 8. GRADLE INFORMATION
+      # ==========================================================
 
-      - name: Inspect Gradle configuration
+      - name: Inspect Gradle Configuration
         working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
         run: |
-          echo "========== Gradle Wrapper =========="
-          grep -n "distributionUrl" \
-            gradle/wrapper/gradle-wrapper.properties || true
+          echo "===== Gradle Wrapper ====="
+
+          cat gradle/wrapper/gradle-wrapper.properties
 
           echo ""
-          echo "========== Root build.gradle =========="
-          sed -n '1,240p' build.gradle
+          echo "===== Root build.gradle ====="
+
+          cat build.gradle
 
           echo ""
-          echo "========== App build.gradle =========="
-          sed -n '1,300p' app/build.gradle
+          echo "===== App build.gradle ====="
+
+          cat app/build.gradle
 
 
-      # ============================================================
+      # ==========================================================
       # 9. GRADLE BUILD
-      # ============================================================
+      # ==========================================================
 
       - name: Build Debug APK
         working-directory: ${{ env.PROJECT_DIR }}
@@ -315,28 +289,20 @@ jobs:
         run: |
           set -o pipefail
 
-          echo "========================================"
-          echo "          BUILDING APK"
-          echo "========================================"
-
           ./gradlew \
             assembleDebug \
             --stacktrace \
-            --info \
             --no-daemon
 
 
-      # ============================================================
+      # ==========================================================
       # 10. FIND APK
-      # ============================================================
+      # ==========================================================
 
-      - name: Find generated APK
+      - name: Find APK
         working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
         run: |
-          echo "========================================"
-          echo "             APK RESULTS"
-          echo "========================================"
+          echo "Generated APK files:"
 
           find . \
             -type f \
@@ -344,11 +310,11 @@ jobs:
             -print
 
 
-      # ============================================================
+      # ==========================================================
       # 11. UPLOAD APK
-      # ============================================================
+      # ==========================================================
 
-      - name: Upload Debug APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Android-Debug-APK
@@ -358,11 +324,11 @@ jobs:
           retention-days: 14
 
 
-      # ============================================================
-      # 12. UPLOAD BUILD LOGS IF NEEDED
-      # ============================================================
+      # ==========================================================
+      # 12. UPLOAD BUILD REPORTS
+      # ==========================================================
 
-      - name: Upload build reports
+      - name: Upload Build Reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
